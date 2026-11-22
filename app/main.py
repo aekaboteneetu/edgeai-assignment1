@@ -34,11 +34,11 @@ class Reading(BaseModel):
     # Give every field a sensible range, e.g. Field(ge=..., le=...), so a glitch is refused
     # with HTTP 422 instead of being answered with a made-up number. Base the limits on what a
     # real sensor can report, not on your data's min and max: real readings must still get answers.
-    battery_v: float
-    temp_c: float
-    rings_per_day: float
-    wifi_rssi_dbm: float
-    age_months: float
+    battery_v: float = Field(ge=2.5, le=4.4)
+    temp_c: float = Field(ge=-40, le=85)
+    rings_per_day: float = Field(ge=0, le=200)
+    wifi_rssi_dbm: float = Field(ge=-120, le=-1)
+    age_months: float = Field(ge=0, le=120)
 
 
 class Batch(BaseModel):
@@ -58,7 +58,18 @@ def model_info():
     #  "fits_300kb_sram_f32": true/false, "fits_300kb_sram_int8": true/false}
     # Count only the Linear layers (ReLU has no parameters). Clue: a Linear layer m has
     # m.in_features and m.out_features.
-    return {"layers": [], "total_params": 0}
+    linears = [m for m in net.net if isinstance(m, torch.nn.Linear)]
+    layers = []
+    for i, m in enumerate(linears, 1):
+        a, b = m.in_features, m.out_features
+        layers.append({"name": f"linear{i}", "in": a, "out": b, "params": a * b + b,
+                       "bytes_f32": 4 * (a * b + b), "macs": a * b})
+    total_params = sum(l["params"] for l in layers)
+    total_f32 = sum(l["bytes_f32"] for l in layers)
+    return {"layers": layers, "total_params": total_params, "total_bytes_f32": total_f32,
+            "total_bytes_int8": total_params, "total_macs": sum(l["macs"] for l in layers),
+            "fits_300kb_sram_f32": total_f32 <= 300 * 1024,
+            "fits_300kb_sram_int8": total_params <= 300 * 1024}
 
 
 @app.get("/health")
@@ -77,11 +88,21 @@ async def run(request: Request, schema):
     rows = data.rows if isinstance(data, Batch) else [data]
     # TODO Mission 3: time each of the three stages below the same way "parse" is timed above,
     # storing them as t["normalise"], t["inference"] and t["build"].
+    
+    t0 = time.perf_counter()
     x = (np.array([[getattr(r, f) for f in FEATURES] for r in rows], np.float32) - MU) / SD
+    t["normalise"] = ms(t0)
+
+    t0 = time.perf_counter()
     with torch.no_grad():
         y = net(torch.from_numpy(x)).numpy()
+    t["inference"] = ms(t0)
+
+    t0 = time.perf_counter()
     days = [round(float(v), 2) for v in np.maximum(y, 0)]
     body = {"days_left": days if isinstance(data, Batch) else days[0]}
+    t["build"] = ms(t0)
+
     t["server_total"] = ms(t_all)
     body["timings_ms"] = t
     return body
