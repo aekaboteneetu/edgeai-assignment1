@@ -26,7 +26,8 @@ hidden = tuple(int(h) for h in a.hidden.split(","))
 df = pd.read_csv(f"data/team_{a.team:02d}_train.csv")
 # TODO Mission 1: find the sensor glitches (plot every column first!) and write a rule that
 # marks them. Say in your report how many you found and why each rule is safe.
-bad = np.zeros(len(df), dtype=bool)
+bad = ((df.battery_v <= 0) | (df.temp_c <= -100) | (df.wifi_rssi_dbm >= 0)).to_numpy()
+print(f"  battery_v=0: {(df.battery_v <= 0).sum()}, temp_c=-127: {(df.temp_c <= -100).sum()}, rssi=0: {(df.wifi_rssi_dbm >= 0).sum()}")
 print(f"{len(df)} rows, {bad.sum()} glitch rows dropped")
 df = df[~bad]
 
@@ -36,12 +37,15 @@ val, tr = df.iloc[idx[:n_val]], df.iloc[idx[n_val:]]
 X, y = tr[FEATURES].to_numpy(np.float32), tr.days_left.to_numpy(np.float32)
 Xv, yv = val[FEATURES].to_numpy(np.float32), val.days_left.to_numpy(np.float32)
 # TODO Mission 2: normalisation. Why must mu and sd come from the TRAINING rows only?
-mu, sd = np.zeros(X.shape[1], np.float32), np.ones(X.shape[1], np.float32)
+mu, sd = X.mean(0), X.std(0)
 
 mae = lambda p, t: float(np.mean(np.abs(p - t)))
 print(f"baseline (predict the mean): {mae(np.full_like(yv, y.mean()), yv):.2f} days")
 # TODO Mission 1: a straight-line model (linear regression) as the second baseline.
 # Use np.linalg.lstsq on [X, 1]. Print its validation MAE the same way as the line above.
+A = np.c_[X, np.ones(len(X), np.float32)]
+w = np.linalg.lstsq(A, y, rcond=None)[0]
+print(f"baseline 2 (linear regression): {mae(np.c_[Xv, np.ones(len(Xv), np.float32)] @ w, yv):.2f} days")
 
 torch.manual_seed(0)
 net = BatteryNet(hidden)
